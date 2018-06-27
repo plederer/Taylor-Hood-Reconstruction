@@ -10,79 +10,90 @@ void ReconstructionVertex::CalcReconstructionVertex(shared_ptr<GridFunction> gfu
   shared_ptr<MeshAccess> ma  = gfu->GetMeshAccess();
   shared_ptr<FESpace> fespace_s = gfsigma->GetFESpace();
   shared_ptr<FESpace> fespace_u = gfu->GetFESpace();
- #pragma omp parallel for
-  for (int i = 0; i < nv; ++i)
-    {
-      int ldofs = globaldofs[i].Size();
-      Vector<> localrhs(ldofs+meanvaldofs);
-      localrhs=0.0;
+
+  static mutex add_indirect;
+  
+  ParallelForRange(nv, [&](IntRange r)
+		   {
+		     LocalHeap lh(100000, "local_reconstruction");
+		     for (auto i : r) 
+		       {
+			 HeapReset hr(lh);
       
-      LocalHeap lh(100000, "local_reconstruction");
-      for (int j = 0; j < patch_elements[i].Size() ; j++)
-	{
-	  HeapReset hr(lh);
-	  int el = patch_elements[i][j];
-	  ElementId ei(VOL,el);
+			 int ldofs = globaldofs[i].Size();
+			 Vector<> localrhs(ldofs+meanvaldofs);
+			 localrhs=0.0;
+      
+      
+			 for (int j = 0; j < patch_elements[i].Size() ; j++)
+			   {
+			     HeapReset hr(lh);
+			     int el = patch_elements[i][j];
+			     ElementId ei(VOL,el);
 
-	  const ElementTransformation & eltrans = ma->GetTrafo (ei, lh);
+			     const ElementTransformation & eltrans = ma->GetTrafo (ei, lh);
 	  
-	  const FiniteElement & felu = fespace_u -> GetFE(ei,lh);
-	  const CompoundFiniteElement & cfelu = dynamic_cast<const CompoundFiniteElement&>(felu);
-	  const ScalarFiniteElement<2> & h1fel = dynamic_cast<const ScalarFiniteElement<2> &> (cfelu[0]);
+			     const FiniteElement & felu = fespace_u -> GetFE(ei,lh);
+			     const CompoundFiniteElement & cfelu = dynamic_cast<const CompoundFiniteElement&>(felu);
+			     const ScalarFiniteElement<2> & h1fel = dynamic_cast<const ScalarFiniteElement<2> &> (cfelu[0]);
 
-	  const FiniteElement & felur = fespace_s -> GetFE(ei,lh);
-	  const CompoundFiniteElement & cfelur = dynamic_cast<const CompoundFiniteElement&>(felur);
-	  const ScalarFiniteElement<2> & l2fel = dynamic_cast<const ScalarFiniteElement<2> &> (cfelur[1]);	
+			     const FiniteElement & felur = fespace_s -> GetFE(ei,lh);
+			     const CompoundFiniteElement & cfelur = dynamic_cast<const CompoundFiniteElement&>(felur);
+			     const ScalarFiniteElement<2> & l2fel = dynamic_cast<const ScalarFiniteElement<2> &> (cfelur[1]);	
 
-	  int nd_vr = l2fel.GetNDof();
+			     int nd_vr = l2fel.GetNDof();
 
-	  Array<int> dnumsu(felu.GetNDof(), lh), dnumss(felur.GetNDof(), lh);
+			     Array<int> dnumsu(felu.GetNDof(), lh), dnumss(felur.GetNDof(), lh);
 
-	  fespace_u->GetDofNrs(ei, dnumsu);
-	  fespace_s->GetDofNrs(ei, dnumss);
+			     fespace_u->GetDofNrs(ei, dnumsu);
+			     fespace_s->GetDofNrs(ei, dnumss);
 
-	  IntRange udofs = cfelu.GetRange(0);
-	  IntRange vdofs = cfelu.GetRange(1);
+			     IntRange udofs = cfelu.GetRange(0);
+			     IntRange vdofs = cfelu.GetRange(1);
 
-	  FlatVector<> eluv(felu.GetNDof(), lh), shape(nd_vr, lh), elf(nd_vr,lh);
+			     FlatVector<> eluv(felu.GetNDof(), lh), shape(nd_vr, lh), elf(nd_vr,lh);
 
-	  gfu->GetElementVector(dnumsu, eluv);	  
+			     gfu->GetElementVector(dnumsu, eluv);	  
 
-	  IntegrationRule ir(eltrans.GetElementType(), felu.Order()*2);
+			     IntegrationRule ir(eltrans.GetElementType(), felu.Order()*2);
 	  
-	   elf = 0.0;
-	   for(int k = 0; k< ir.GetNIP(); k++)
-	    {
-	      MappedIntegrationPoint<2,2> mip(ir[k], eltrans);
+			     elf = 0.0;
+			     for(int k = 0; k< ir.GetNIP(); k++)
+			       {
+				 MappedIntegrationPoint<2,2> mip(ir[k], eltrans);
 
-	      Vec<2> gradu;
-	      Vec<2> gradv;
-	      DiffOpGradient<2>::Apply(h1fel, mip, eluv.Range(udofs), gradu, lh);
-	      DiffOpGradient<2>::Apply(h1fel, mip, eluv.Range(vdofs), gradv, lh);
-	      Vec<1> divu = gradu[0]+gradv[1];			     
+				 Vec<2> gradu;
+				 Vec<2> gradv;
+				 DiffOpGradient<2>::Apply(h1fel, mip, eluv.Range(udofs), gradu, lh);
+				 DiffOpGradient<2>::Apply(h1fel, mip, eluv.Range(vdofs), gradv, lh);
+				 Vec<1> divu = gradu[0]+gradv[1];			     
 
-	      double fac = ir[k].Weight() * mip.GetMeasure();
-	      l2fel.CalcShape(ir[k], shape);
-	      elf += (fac * divu(0))*shape;
-	    }
+				 double fac = ir[k].Weight() * mip.GetMeasure();
+				 l2fel.CalcShape(ir[k], shape);
+				 elf += (fac * divu(0))*shape;
+			       }
 	   	  
-	  FlatArray<int> dnumss_l2part = dnumss.Range(cfelur.GetRange(1));
+			     FlatArray<int> dnumss_l2part = dnumss.Range(cfelur.GetRange(1));
 	  
-	  for(int k=0; k< dnumss_l2part.Size(); k++)
-	    for (int l = 0; l<globaldofs[i].Size(); ++l)
-	      if(dnumss_l2part[k] == globaldofs[i][l])
-		  localrhs[l] = elf[k];
-	}
+			     for(int k=0; k< dnumss_l2part.Size(); k++)
+			       for (int l = 0; l<globaldofs[i].Size(); ++l)
+				 if(dnumss_l2part[k] == globaldofs[i][l])
+				   localrhs[l] = elf[k];
+			   }
 
-      Vector<> vertexpatchrhs(ldofs+meanvaldofs);
-      vertexpatchrhs = 0.0;
-      vertexpatchrhs.Range(0,ldofs) = extrosc[i] * localrhs.Range(0,ldofs);
+			 Vector<> vertexpatchrhs(ldofs+meanvaldofs);
+			 vertexpatchrhs = 0.0;
+			 vertexpatchrhs.Range(0,ldofs) = extrosc[i] * localrhs.Range(0,ldofs);
       
-      localrhs = patchmatinv[i] * vertexpatchrhs;
- #pragma omp critical    
-      gfsigma->GetVector().AddIndirect(globaldofs[i], localrhs.Range(0,ldofs));
-    }
-}
+			 localrhs = patchmatinv[i] * vertexpatchrhs;
+			 //#pragma omp critical
+			 {
+			   lock_guard<mutex> guard(add_indirect);
+			   gfsigma->GetVector().AddIndirect(globaldofs[i], localrhs.Range(0,ldofs));
+			 }
+		       }
+		   });
+}		   
 
 void ReconstructionVertex::CalcReconstructionVertexTrans(shared_ptr<LinearForm> fsigma, shared_ptr<LinearForm> fu)
 {
@@ -92,90 +103,101 @@ void ReconstructionVertex::CalcReconstructionVertexTrans(shared_ptr<LinearForm> 
   shared_ptr<MeshAccess> ma  = fu->GetMeshAccess();
   shared_ptr<FESpace> fespace_s = fsigma->GetFESpace();
   shared_ptr<FESpace> fespace_u = fu->GetFESpace();
+
+  static mutex add_indirect;
   
-#pragma omp parallel for  
-  for(int i = 0; i < nv; i++)
-    {
-      int ldofs = globaldofs[i].Size();      
-      Vector<> localrhs(ldofs);
-      Vector<> vertexpatchrhs(ldofs+meanvaldofs);
-      vertexpatchrhs = 0.0;
+  //#pragma omp parallel for  
+  //for(int i = 0; i < nv; i++)
+      ParallelForRange(nv, [&](IntRange r)
+		       {
+			 LocalHeap lh(100000, "local_reconstruction");
+			 for (auto i : r) 
+			   {
+			     HeapReset hr(lh);
+			     int ldofs = globaldofs[i].Size();      
+			     Vector<> localrhs(ldofs);
+			     Vector<> vertexpatchrhs(ldofs+meanvaldofs);
+			     vertexpatchrhs = 0.0;
       
-      Vector<> mean_sol(ldofs+meanvaldofs);
-      Vector<> sol(ldofs);
+			     Vector<> mean_sol(ldofs+meanvaldofs);
+			     Vector<> sol(ldofs);
 
-      fsigma->GetElementVector(globaldofs[i], vertexpatchrhs.Range(0,ldofs));
+			     fsigma->GetElementVector(globaldofs[i], vertexpatchrhs.Range(0,ldofs));
       
-      //sol = 0.0;
+			     //sol = 0.0;
 
-      mean_sol = patchmatinv[i]* vertexpatchrhs;
-      sol = Trans(extrosc[i]) * mean_sol.Range(0,ldofs);
+			     mean_sol = patchmatinv[i]* vertexpatchrhs;
+			     sol = Trans(extrosc[i]) * mean_sol.Range(0,ldofs);
      
-      LocalHeap lh(100000, "local_reconstruction");
+			     //LocalHeap lh(100000, "local_reconstruction");
 
-      for (int j = 0; j < patch_elements[i].Size() ; j++)
-	{
-	  HeapReset hr(lh);
-	  int el = patch_elements[i][j];
-	  ElementId ei(VOL,el);	
+			     for (int j = 0; j < patch_elements[i].Size() ; j++)
+			       {
+				 HeapReset hr(lh);
+				 int el = patch_elements[i][j];
+				 ElementId ei(VOL,el);	
  
-	  const ElementTransformation & eltrans = ma->GetTrafo (ei, lh);
+				 const ElementTransformation & eltrans = ma->GetTrafo (ei, lh);
 
-	  const FiniteElement & felu = fespace_u -> GetFE(ei,lh);
-	  const CompoundFiniteElement & cfelu = dynamic_cast<const CompoundFiniteElement&>(felu);
-	  const ScalarFiniteElement<2> & h1fel = dynamic_cast<const ScalarFiniteElement<2> &> (cfelu[0]);
+				 const FiniteElement & felu = fespace_u -> GetFE(ei,lh);
+				 const CompoundFiniteElement & cfelu = dynamic_cast<const CompoundFiniteElement&>(felu);
+				 const ScalarFiniteElement<2> & h1fel = dynamic_cast<const ScalarFiniteElement<2> &> (cfelu[0]);
 
-	  const FiniteElement & felur = fespace_s -> GetFE(ei,lh);	  
-	  const CompoundFiniteElement & cfelur = dynamic_cast<const CompoundFiniteElement&>(felur);	  	  
-	  const ScalarFiniteElement<2> & l2fel = dynamic_cast<const ScalarFiniteElement<2> &> (cfelur[1]);	
+				 const FiniteElement & felur = fespace_s -> GetFE(ei,lh);	  
+				 const CompoundFiniteElement & cfelur = dynamic_cast<const CompoundFiniteElement&>(felur);	  	  
+				 const ScalarFiniteElement<2> & l2fel = dynamic_cast<const ScalarFiniteElement<2> &> (cfelur[1]);	
 
-	  int nd_vr = l2fel.GetNDof();
+				 int nd_vr = l2fel.GetNDof();
 
-	  Array<int> dnumsu(felu.GetNDof(), lh), dnumss(felur.GetNDof(), lh);
+				 Array<int> dnumsu(felu.GetNDof(), lh), dnumss(felur.GetNDof(), lh);
 
-	  fespace_u->GetDofNrs(ei, dnumsu);
-	  fespace_s->GetDofNrs(ei, dnumss);
+				 fespace_u->GetDofNrs(ei, dnumsu);
+				 fespace_s->GetDofNrs(ei, dnumss);
 
-	  IntRange udofs = cfelu.GetRange(0);
-	  IntRange vdofs = cfelu.GetRange(1);
+				 IntRange udofs = cfelu.GetRange(0);
+				 IntRange vdofs = cfelu.GetRange(1);
 
-	  FlatVector<>  shape(nd_vr, lh), elu(felu.GetNDof(),lh), elui(felu.GetNDof(),lh), elfsig(nd_vr, lh);
+				 FlatVector<>  shape(nd_vr, lh), elu(felu.GetNDof(),lh), elui(felu.GetNDof(),lh), elfsig(nd_vr, lh);
 	  
-	  elu = 0.0;
-	  elfsig = 0.0;
+				 elu = 0.0;
+				 elfsig = 0.0;
 	  
-	  IntegrationRule ir(eltrans.GetElementType(), felu.Order()*2);
+				 IntegrationRule ir(eltrans.GetElementType(), felu.Order()*2);
 	  
-	  FlatArray<int> dnumss_l2part = dnumss.Range(cfelur.GetRange(1));
+				 FlatArray<int> dnumss_l2part = dnumss.Range(cfelur.GetRange(1));
 	  
-	  for(int k=0; k<dnumss_l2part.Size(); k++)
-	     for (int l = 0; l<globaldofs[i].Size(); ++l)
-	       if((dnumss_l2part[k] == globaldofs[i][l]))
-		 elfsig[k] = sol[l];
+				 for(int k=0; k<dnumss_l2part.Size(); k++)
+				   for (int l = 0; l<globaldofs[i].Size(); ++l)
+				     if((dnumss_l2part[k] == globaldofs[i][l]))
+				       elfsig[k] = sol[l];
 	  	  
-	  elui = 0; 
-	  for(int k = 0; k< ir.GetNIP(); k++)
-	    {
-	      MappedIntegrationPoint<2,2> mip(ir[k], eltrans);
+				 elui = 0; 
+				 for(int k = 0; k< ir.GetNIP(); k++)
+				   {
+				     MappedIntegrationPoint<2,2> mip(ir[k], eltrans);
 	      
-	      l2fel.CalcShape(ir[k], shape);
+				     l2fel.CalcShape(ir[k], shape);
 
-	      double fac = InnerProduct(elfsig, shape);
-	      fac *= ir[k].Weight() * mip.GetMeasure();
+				     double fac = InnerProduct(elfsig, shape);
+				     fac *= ir[k].Weight() * mip.GetMeasure();
 
-	      Vec<2> u1 = { fac, 0 }, u2={0,fac};
+				     Vec<2> u1 = { fac, 0 }, u2={0,fac};
 	      
-	      FlatVector<double> eluu=  elui.Range(udofs);
-	      FlatVector<double> eluv=  elui.Range(vdofs);
+				     FlatVector<double> eluu=  elui.Range(udofs);
+				     FlatVector<double> eluv=  elui.Range(vdofs);
 
-	      DiffOpGradient<2>::ApplyTrans(h1fel, mip, u1, eluu, lh);
-	      DiffOpGradient<2>::ApplyTrans(h1fel, mip, u2, eluv, lh);
-	      elu += elui;
-	    }
-#pragma omp critical
-	  fu->GetVector().AddIndirect(dnumsu, elu);
-	}      
-   }
+				     DiffOpGradient<2>::ApplyTrans(h1fel, mip, u1, eluu, lh);
+				     DiffOpGradient<2>::ApplyTrans(h1fel, mip, u2, eluv, lh);
+				     elu += elui;
+				   }
+				 //#pragma omp critical
+				 {
+				   lock_guard<mutex> guard(add_indirect);
+				   fu->GetVector().AddIndirect(dnumsu, elu);
+				 }
+			       }      
+			   }
+		       });
 }
 
 
