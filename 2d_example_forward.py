@@ -26,7 +26,7 @@ gradv = v.Deriv()
 gradwu = wu.Deriv()
 gradwv = wv.Deriv()
 
-nu = 1e-6
+nu = 1
 
 a = BilinearForm(X, symmetric=True)
 a += SymbolicBFI( nu*(gradu*gradwu + gradv*gradwv) 
@@ -48,6 +48,7 @@ sol.components[0].Set(0*x,BND)
 sol.components[1].Set(0*y,BND)
 
 
+
 #Reconstruction:
 Sig = FESpace("hdivho", mesh, order=order)
 W = FESpace("l2hoh1dofs", mesh, order=order-1)
@@ -65,62 +66,30 @@ div_tau = tau.Deriv()
 ar = BilinearForm(Xr, symmetric = False) #symmetric = False is important!!!
 ar += SymbolicBFI(tau*sigma + w*div_tau + vr*div_simga + w*mu + lam*vr)
 
-
-fr = LinearForm(Xr)
-fr += SymbolicLFI( force * tau , bonus_intorder = 10)
-
-
-fdelta = LinearForm(X)
-
-
-#RecEl = ReconstructionElement()
-#RecEl.Setup(X,Xr,ar,H1space)
-#RecEl.CalcTrans(fr,fdelta)
+sig = GridFunction(Xr)
 
 with TaskManager():
     a.Assemble()
     f.Assemble()
     ar.Assemble()
-    fr.Assemble()
-    fdelta.Assemble()
     
+    sol.vec.data = a.mat.Inverse(X.FreeDofs(),inverse="umfpack")*f.vec
     RecV = ReconstructionVertex()
     RecV.Setup(X,Xr,ar,H1space)
-    RecV.CalcTrans(fr,fdelta)
-
-    f.vec.data -= fdelta.vec
-
-    sol.vec.data = a.mat.Inverse(X.FreeDofs(),inverse="umfpack")*f.vec
+    RecV.Calc(sol,sig)
 
 vel = CoefficientFunction( (sol.components[0], sol.components[1]) )
+velR = vel - sig.components[0]
+
+div_vel = sol.components[0].Deriv()[0] + sol.components[1].Deriv()[1]
+div_velR = div_vel - sig.components[0].Deriv()
+
+Draw(vel, mesh, "velocity")
+Draw(velR, mesh, "R_velocity")
+Draw(div_vel, mesh, "div_vel")
+Draw(div_velR, mesh, "div_velR")
+
 pres = sol.components[2]
-
-p_exact = CoefficientFunction(x*x*x*x*x*x+y*y*y*y*y*y - 2/7)
-u_exact = CoefficientFunction( (x*x*(1-x)*(1-x) *(2*y*(1-y)*(1-y) - 2* y*y*(1-y)), -1*y*y*(1-y)*(1-y) *(2*x*(1-x)*(1-x) - 2*x*x*(1-x))))
-
-u_ex_deriv = CoefficientFunction( (  (2*x*(1-x)*(1-x) - 2*x*x*(1-x)) * (2*y*(1-y)*(1-y) - 2* y*y*(1-y)) , x*x*(1-x)*(1-x) * (2*(1-y)*(1-y) - 8*y*(1-y)+2*y*y)  ))
-v_ex_deriv = CoefficientFunction(  ( -y*y*(1-y)*(1-y) * (2*(1-x)*(1-x) - 8*x*(1-x)+2*x*x) , -1*(2*x*(1-x)*(1-x) - 2*x*x*(1-x)) * (2*y*(1-y)*(1-y) - 2* y*y*(1-y))  ))
-
-Draw(mesh=mesh,cf=p_exact,name="p_exakt")
-Draw(mesh=mesh,cf=u_exact,name="u_exakt")
-
-Draw(mesh=mesh,cf=sol.components[1].Deriv(),name="v_deriv")
-Draw(mesh=mesh,cf=v_ex_deriv,name="v_deriv_exakt")
-
-Draw(mesh=mesh,cf=pres,name="pressure")
-Draw(mesh=mesh,cf=vel,name="velocity")
-
-err = (pres-p_exact)*(pres-p_exact)
-error = Integrate(err, mesh, VOL)
-print("L2-Error-pressure:", sqrt(error))
-
-err = (vel-u_exact)*(vel-u_exact)
-error = Integrate(err, mesh, VOL)
-print("L2-Error-vel:",sqrt(error))
-
-h1err = (sol.components[0].Deriv()-u_ex_deriv)*(sol.components[0].Deriv()-u_ex_deriv) + (sol.components[1].Deriv()-v_ex_deriv)*(sol.components[1].Deriv()-v_ex_deriv)
-h1error = Integrate(h1err, mesh, VOL)
-print("H1-Error-vel:",sqrt(abs(h1error)))
 
 visoptions.scalfunction='velocity:0'
 visoptions.subdivisions=4
