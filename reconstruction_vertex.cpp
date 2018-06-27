@@ -195,7 +195,7 @@ void ReconstructionVertex::CalcReconstructionVertexTrans(shared_ptr<LinearForm> 
 				   lock_guard<mutex> guard(add_indirect);
 				   fu->GetVector().AddIndirect(dnumsu, elu);
 				 }
-			       }      
+			       }
 			   }
 		       });
 }
@@ -357,262 +357,265 @@ void ReconstructionVertex::CalcVertexPatches(shared_ptr<FESpace> fespace_u, shar
   patchmatinv.SetSize(nv);
   extrosc.SetSize(nv);
   
-#pragma omp parallel for
-    //ParallelFor(Range(nv),[&](int i)
-  for (int i = 0; i < nv; ++i)
-    {
-      //LocalHeap lh=lhglobal.Split();
-      HeapReset hr(lh);
+  //#pragma omp parallel for
+  //ParallelFor(Range(nv),[&](int i)
+  //for (int i = 0; i < nv; ++i)
+  ParallelForRange(nv, [&](IntRange r)		   
+		   {
+		     for (auto i : r)
+		       {
+			 //LocalHeap lh=lhglobal.Split();
+			 HeapReset hr(lh);
       
-      Array<int> & globallocaldofs = globaldofs[i];
+			 Array<int> & globallocaldofs = globaldofs[i];
             
-      for (int j = 0; j < patch_elements[i].Size() ; j++)
-	{
-	  Array<int> dofs;
-	  fespace_s->GetInnerDofNrs(patch_elements[i][j], dofs);
-	  globallocaldofs+=dofs;
-	}
+			 for (int j = 0; j < patch_elements[i].Size() ; j++)
+			   {
+			     Array<int> dofs;
+			     fespace_s->GetInnerDofNrs(patch_elements[i][j], dofs);
+			     globallocaldofs+=dofs;
+			   }
          
-      for (int j = 0; j < patch_edges[i].Size() ; j++)
-	{
-	  Array<int> dofs;
-	  fespace_s->GetEdgeDofNrs(patch_edges[i][j], dofs);
-	  globallocaldofs+=dofs;
-	}
+			 for (int j = 0; j < patch_edges[i].Size() ; j++)
+			   {
+			     Array<int> dofs;
+			     fespace_s->GetEdgeDofNrs(patch_edges[i][j], dofs);
+			     globallocaldofs+=dofs;
+			   }
 
-      globallocaldofs+=numberdofs;
+			 globallocaldofs+=numberdofs;
 
-      int ldofs = globallocaldofs.Size();
-      QuickSort(globallocaldofs);
+			 int ldofs = globallocaldofs.Size();
+			 QuickSort(globallocaldofs);
       
-      Matrix<> localmata(ldofs+meanvaldofs);
-      Matrix<> bubbleprojmat(ldofs);
-      bubbleprojmat = Identity(ldofs);
-      localmata=0.0;
+			 Matrix<> localmata(ldofs+meanvaldofs);
+			 Matrix<> bubbleprojmat(ldofs);
+			 bubbleprojmat = Identity(ldofs);
+			 localmata=0.0;
 
-      timerlocala.Start();
-      for (int j = 0; j < ldofs; ++j)
-	{	 
-	  auto d = mata.GetRowIndices(globallocaldofs[j]);
-	  auto v = mata.GetRowValues(globallocaldofs[j]);
-	  int k=0;
-	  int l=0;
+			 timerlocala.Start();
+			 for (int j = 0; j < ldofs; ++j)
+			   {	 
+			     auto d = mata.GetRowIndices(globallocaldofs[j]);
+			     auto v = mata.GetRowValues(globallocaldofs[j]);
+			     int k=0;
+			     int l=0;
 	  
-	  while( k < globallocaldofs.Size())
-	    {
-	      if(d[l] == globallocaldofs[k])
-		{
-		  localmata(j,k) = v[l];
-		  k++;
-		  l++;
-		}
-	      else if(d[l]>globallocaldofs[k])
-		  k++;
-	      else
-		l++;
+			     while( k < globallocaldofs.Size())
+			       {
+				 if(d[l] == globallocaldofs[k])
+				   {
+				     localmata(j,k) = v[l];
+				     k++;
+				     l++;
+				   }
+				 else if(d[l]>globallocaldofs[k])
+				   k++;
+				 else
+				   l++;
 	    
-	    }
-	}
+			       }
+			   }
       
-      timerlocala.Stop();
+			 timerlocala.Stop();
 
-      //Calculate bubble Projection and meanvals
-      Vec<2> Vertex0(0,0);
-      ma->GetPoint(i,Vertex0);
+			 //Calculate bubble Projection and meanvals
+			 Vec<2> Vertex0(0,0);
+			 ma->GetPoint(i,Vertex0);
 
-      IntegrationRule bubbleweightpoints;
-      for (int l = 0; l < l2order+1; ++l)
-	{
-	  for (int k = 0; k < l2order+1-l; ++k)
-	    {
-	      IntegrationPoint ip(double(l)/(l2order), double(k)/(l2order));
-	      bubbleweightpoints.AddIntegrationPoint(ip);
-	    }	  
-	}
+			 IntegrationRule bubbleweightpoints;
+			 for (int l = 0; l < l2order+1; ++l)
+			   {
+			     for (int k = 0; k < l2order+1-l; ++k)
+			       {
+				 IntegrationPoint ip(double(l)/(l2order), double(k)/(l2order));
+				 bubbleweightpoints.AddIntegrationPoint(ip);
+			       }	  
+			   }
             
-      for (int j = 0; j < patch_elements[i].Size(); ++j)
-	{
+			 for (int j = 0; j < patch_elements[i].Size(); ++j)
+			   {
 	      
-	  int id = patch_elements[i][j];
-	  ElementId ei(VOL,id);
+			     int id = patch_elements[i][j];
+			     ElementId ei(VOL,id);
 	      
-	  const ElementTransformation & eltrans = ma->GetTrafo (ei, lh);
-	  const FiniteElement & felur = fespace_s -> GetFE(ei,lh);
-	  const CompoundFiniteElement & cfelur = dynamic_cast<const CompoundFiniteElement&>(felur);
-	  const HDivFiniteElement<2> & hdivfel = dynamic_cast<const HDivFiniteElement<2> &>(cfelur[0]);
-	  const ScalarFiniteElement<2> & l2fel = dynamic_cast<const ScalarFiniteElement<2> &> (cfelur[1]);
+			     const ElementTransformation & eltrans = ma->GetTrafo (ei, lh);
+			     const FiniteElement & felur = fespace_s -> GetFE(ei,lh);
+			     const CompoundFiniteElement & cfelur = dynamic_cast<const CompoundFiniteElement&>(felur);
+			     const HDivFiniteElement<2> & hdivfel = dynamic_cast<const HDivFiniteElement<2> &>(cfelur[0]);
+			     const ScalarFiniteElement<2> & l2fel = dynamic_cast<const ScalarFiniteElement<2> &> (cfelur[1]);
 	  
-	  L2HighOrderFE<ET_TRIG> meanvalfe(meanvalorder-1);	     
-	  int nd = hdivfel.GetNDof();
-	  int nd_vr = l2fel.GetNDof();
+			     L2HighOrderFE<ET_TRIG> meanvalfe(meanvalorder-1);	     
+			     int nd = hdivfel.GetNDof();
+			     int nd_vr = l2fel.GetNDof();
 	  
-	  FlatMatrix<> localmeanval(meanvaldofs, nd, lh);
-	  FlatMatrixFixWidth<2> shape (hdivfel.GetNDof(), lh);
+			     FlatMatrix<> localmeanval(meanvaldofs, nd, lh);
+			     FlatMatrixFixWidth<2> shape (hdivfel.GetNDof(), lh);
 	      
-	  IntegrationRule ir(eltrans.GetElementType(), hdivfel.Order()*2);
+			     IntegrationRule ir(eltrans.GetElementType(), hdivfel.Order()*2);
 
-	  localmeanval = 0.0;
+			     localmeanval = 0.0;
 
-	  FlatVector<> shapemeanval(meanvaldofs, lh);
-	  shapemeanval = 0.0;
-	  timermeanvals.Start();
-	  if(meanvalorder !=0)
-	    {
-	      for (int l = 0; l < ir.GetNIP(); l++)
-		{
-		  const MappedIntegrationPoint<2,2> mip(ir[l],eltrans);
-		  double det = mip.GetJacobiDet();
-		  IntegrationPoint physip(mip(0),mip(1));
+			     FlatVector<> shapemeanval(meanvaldofs, lh);
+			     shapemeanval = 0.0;
+			     timermeanvals.Start();
+			     if(meanvalorder !=0)
+			       {
+				 for (int l = 0; l < ir.GetNIP(); l++)
+				   {
+				     const MappedIntegrationPoint<2,2> mip(ir[l],eltrans);
+				     double det = mip.GetJacobiDet();
+				     IntegrationPoint physip(mip(0),mip(1));
 		  
-		  hdivfel.CalcMappedShape(mip, shape);
-		  meanvalfe.CalcShape(physip, shapemeanval);
+				     hdivfel.CalcMappedShape(mip, shape);
+				     meanvalfe.CalcShape(physip, shapemeanval);
 		  
-		  Vec<2> xycoord(mip(1)-Vertex0(1),-1*mip(0)-Vertex0(0));
+				     Vec<2> xycoord(mip(1)-Vertex0(1),-1*mip(0)-Vertex0(0));
 		  
-		  localmeanval += fabs(det) *ir[l].Weight()*shapemeanval*Trans(shape* xycoord);
-		}
-	      Array<int>  dnumss(felur.GetNDof(), lh);
-	      fespace_s->GetDofNrs(ei, dnumss);	  	      
-	      FlatArray<int> dnums_sigma = dnumss.Range(cfelur.GetRange(0));
+				     localmeanval += fabs(det) *ir[l].Weight()*shapemeanval*Trans(shape* xycoord);
+				   }
+				 Array<int>  dnumss(felur.GetNDof(), lh);
+				 fespace_s->GetDofNrs(ei, dnumss);	  	      
+				 FlatArray<int> dnums_sigma = dnumss.Range(cfelur.GetRange(0));
 	  
-	      for(int k = 0; k < dnums_sigma.Size(); k++)
-		for(int l = 0; l<globaldofs[i].Size(); l++)		
-		  if(dnums_sigma[k] == globaldofs[i][l])
-		    {
-		      if(meanvalorder !=0)
-			{
-			  localmata.Rows(ldofs,ldofs+meanvaldofs).Col(l) += localmeanval.Col(k);
-			  localmata.Cols(ldofs,ldofs+meanvaldofs).Row(l) += localmeanval.Col(k);
-			}
-		    }
-	    }
-	  timermeanvals.Stop();
+				 for(int k = 0; k < dnums_sigma.Size(); k++)
+				   for(int l = 0; l<globaldofs[i].Size(); l++)		
+				     if(dnums_sigma[k] == globaldofs[i][l])
+				       {
+					 if(meanvalorder !=0)
+					   {
+					     localmata.Rows(ldofs,ldofs+meanvaldofs).Col(l) += localmeanval.Col(k);
+					     localmata.Cols(ldofs,ldofs+meanvaldofs).Row(l) += localmeanval.Col(k);
+					   }
+				       }
+			       }
+			     timermeanvals.Stop();
 
-	  timerbubble.Start();
-	  //Bubble Projection
-	  Array<int> vnums;
-	  vnums = ma->GetElVertices(ei);
-	  int vertexdof =0;
-	  for (int k = 0; k < 3; k++)
-	    {
-	      if(vnums[k] == i)
-		{
-		  vertexdof = k;
-		}
-	    }
+			     timerbubble.Start();
+			     //Bubble Projection
+			     Array<int> vnums;
+			     vnums = ma->GetElVertices(ei);
+			     int vertexdof =0;
+			     for (int k = 0; k < 3; k++)
+			       {
+				 if(vnums[k] == i)
+				   {
+				     vertexdof = k;
+				   }
+			       }
 	  
-	  FlatMatrix<> basistransformation(nd_vr,nd_vr, lh);
-	  FlatMatrix<> invbasistransformation(nd_vr,nd_vr, lh);
-	  FlatMatrix<> shape_hats(3, nd_vr, lh);
+			     FlatMatrix<> basistransformation(nd_vr,nd_vr, lh);
+			     FlatMatrix<> invbasistransformation(nd_vr,nd_vr, lh);
+			     FlatMatrix<> shape_hats(3, nd_vr, lh);
 	  
-	  l2fel.CalcShape(bubbleweightpoints, basistransformation);
-	  ScalarFE<ET_TRIG,1> p1fe;
+			     l2fel.CalcShape(bubbleweightpoints, basistransformation);
+			     ScalarFE<ET_TRIG,1> p1fe;
 
-	  p1fe.CalcShape(bubbleweightpoints, shape_hats);
+			     p1fe.CalcShape(bubbleweightpoints, shape_hats);
 	  
-	  auto help = Trans(basistransformation);
+			     auto help = Trans(basistransformation);
 
-	  CalcInverse(basistransformation, invbasistransformation);
+			     CalcInverse(basistransformation, invbasistransformation);
 	  
-	  FlatMatrix<> localbubbleproj(nd_vr,nd_vr,lh);
-	  FlatMatrix<> diag_shape_hat(nd_vr,nd_vr,lh);
-	  diag_shape_hat = 0.0;
-	  diag_shape_hat.Diag() = shape_hats.Row(vertexdof);
+			     FlatMatrix<> localbubbleproj(nd_vr,nd_vr,lh);
+			     FlatMatrix<> diag_shape_hat(nd_vr,nd_vr,lh);
+			     diag_shape_hat = 0.0;
+			     diag_shape_hat.Diag() = shape_hats.Row(vertexdof);
 
-	  localbubbleproj = 0.0;
-	  localbubbleproj = Trans(invbasistransformation) * diag_shape_hat * help;
+			     localbubbleproj = 0.0;
+			     localbubbleproj = Trans(invbasistransformation) * diag_shape_hat * help;
 	  
-	  Array<int>  dnumss(felur.GetNDof(), lh);
-	  fespace_s->GetDofNrs(ei, dnumss);	  	      
-	  FlatArray<int> dnums_l2part = dnumss.Range(cfelur.GetRange(1));
+			     Array<int>  dnumss(felur.GetNDof(), lh);
+			     fespace_s->GetDofNrs(ei, dnumss);	  	      
+			     FlatArray<int> dnums_l2part = dnumss.Range(cfelur.GetRange(1));
 	  
-	  for(int k = 0; k < dnums_l2part.Size(); k++)
-	      for(int l = 0; l<globaldofs[i].Size(); l++)		
-		if(dnums_l2part[k] == globaldofs[i][l])
-		{
-		  for(int z = 0; z < dnums_l2part.Size(); z++)
-		    for(int r = 0; r<globaldofs[i].Size(); r++)
-		      if(dnums_l2part[z] == globaldofs[i][r])
-			{
-			  bubbleprojmat(r,l) = localbubbleproj(k,z);
-			  bubbleprojmat(l,r) = localbubbleproj(z,k);
-			}
-		}
-	  timerbubble.Stop();
-	}
+			     for(int k = 0; k < dnums_l2part.Size(); k++)
+			       for(int l = 0; l<globaldofs[i].Size(); l++)		
+				 if(dnums_l2part[k] == globaldofs[i][l])
+				   {
+				     for(int z = 0; z < dnums_l2part.Size(); z++)
+				       for(int r = 0; r<globaldofs[i].Size(); r++)
+					 if(dnums_l2part[z] == globaldofs[i][r])
+					   {
+					     bubbleprojmat(r,l) = localbubbleproj(k,z);
+					     bubbleprojmat(l,r) = localbubbleproj(z,k);
+					   }
+				   }
+			     timerbubble.Stop();
+			   }
 	
 
-      Matrix<> extrosclocal(ldofs);
-      Vector<> smooth(ldofs);
+			 Matrix<> extrosclocal(ldofs);
+			 Vector<> smooth(ldofs);
       
-      extrosclocal = Identity(ldofs);
+			 extrosclocal = Identity(ldofs);
      
-      //add all H1-dofs to elementdofsh1 that they do not appear twice 
-      Array<int> elementdofsh1;      
-      for (int l = 0; l < patch_elements[i].Size(); ++l)
-	{	      
-	  int id = patch_elements[i][l];
-	  Array<int> elementdofselement;
-	  h1fespace->GetDofNrs(ElementId(VOL,id), elementdofselement);
+			 //add all H1-dofs to elementdofsh1 that they do not appear twice 
+			 Array<int> elementdofsh1;      
+			 for (int l = 0; l < patch_elements[i].Size(); ++l)
+			   {	      
+			     int id = patch_elements[i][l];
+			     Array<int> elementdofselement;
+			     h1fespace->GetDofNrs(ElementId(VOL,id), elementdofselement);
 	  
-	  for(int j = 0; j <elementdofselement.Size(); j++)
-	    if(!(elementdofsh1.Contains(elementdofselement[j])))
-	      elementdofsh1.Append(elementdofselement[j]);
-	}
+			     for(int j = 0; j <elementdofselement.Size(); j++)
+			       if(!(elementdofsh1.Contains(elementdofselement[j])))
+				 elementdofsh1.Append(elementdofselement[j]);
+			   }
 
-      //loop over all coupling dofs
-      //note that also the dofs on the boundary of the vertex are included
-      //but those dofs will be set to zero in the evaluation of the operator later
+			 //loop over all coupling dofs
+			 //note that also the dofs on the boundary of the vertex are included
+			 //but those dofs will be set to zero in the evaluation of the operator later
 
 
  
-      for(int j = 0; j < elementdofsh1.Size(); j++)
-	{
-	  //if dofnr is no inner dofs
-	  Array<int> smoothdofs;
-	  smooth=0.0;
-	  //smoothmat=0.0;
-	  // if(h1tol2table[elementdofsh1[j]].Size()>0)
-	  //{
-	      //dofs that couple
-	      for (int k = 0; k < h1tol2table[elementdofsh1[j]].Size(); ++k)
-		{
-		  //check in globallocaldofs
-		  for(int s = 0; s<globallocaldofs.Size(); s++)
-		    if(globallocaldofs[s] == h1tol2table[elementdofsh1[j]][k])
-		      {
-			smooth(s)=1;
-			smoothdofs.Append(s);
-		      }
-		}
-	      timersmooth.Start();
-	      //extrosclocal-=1.0/h1tol2table[elementdofsh1[j]].Size()*(smooth*Trans(smooth));
-	      for (int k =0; k < smoothdofs.Size(); ++k)
-		{
-		  for (int s =0; s < smoothdofs.Size(); ++s)
-		    {
-		      extrosclocal(smoothdofs[k],smoothdofs[s]) -= 1.0/h1tol2table[elementdofsh1[j]].Size();
-		    }
+			 for(int j = 0; j < elementdofsh1.Size(); j++)
+			   {
+			     //if dofnr is no inner dofs
+			     Array<int> smoothdofs;
+			     smooth=0.0;
+			     //smoothmat=0.0;
+			     // if(h1tol2table[elementdofsh1[j]].Size()>0)
+			     //{
+			     //dofs that couple
+			     for (int k = 0; k < h1tol2table[elementdofsh1[j]].Size(); ++k)
+			       {
+				 //check in globallocaldofs
+				 for(int s = 0; s<globallocaldofs.Size(); s++)
+				   if(globallocaldofs[s] == h1tol2table[elementdofsh1[j]][k])
+				     {
+				       smooth(s)=1;
+				       smoothdofs.Append(s);
+				     }
+			       }
+			     timersmooth.Start();
+			     //extrosclocal-=1.0/h1tol2table[elementdofsh1[j]].Size()*(smooth*Trans(smooth));
+			     for (int k =0; k < smoothdofs.Size(); ++k)
+			       {
+				 for (int s =0; s < smoothdofs.Size(); ++s)
+				   {
+				     extrosclocal(smoothdofs[k],smoothdofs[s]) -= 1.0/h1tol2table[elementdofsh1[j]].Size();
+				   }
 		  
-		}
-	      timersmooth.Stop();
-	}
+			       }
+			     timersmooth.Stop();
+			   }
 
      
       
       
-      timerinv.Start();
-      CalcInverse(localmata);
-      timerinv.Stop();
+			 timerinv.Start();
+			 CalcInverse(localmata);
+			 timerinv.Stop();
 
-      //patchmatinv[i].SetSize(ldofs+meanvaldofs);
-      patchmatinv[i] = std::move(localmata);
+			 //patchmatinv[i].SetSize(ldofs+meanvaldofs);
+			 patchmatinv[i] = std::move(localmata);
 
-      extrosc[i].SetSize(ldofs);
-      timermult.Start();
-      extrosc[i] = (bubbleprojmat*extrosclocal | Lapack) ;
-      timermult.Stop();
-      //timerinv.AddFlops(bubbleprojmat.Width()*bubbleprojmat.Width()*bubbleprojmat.Width());
-
-    }
+			 extrosc[i].SetSize(ldofs);
+			 timermult.Start();
+			 extrosc[i] = (bubbleprojmat*extrosclocal | Lapack) ;
+			 timermult.Stop();
+			 //timerinv.AddFlops(bubbleprojmat.Width()*bubbleprojmat.Width()*bubbleprojmat.Width());
+		       }		   
+		   });
 }
