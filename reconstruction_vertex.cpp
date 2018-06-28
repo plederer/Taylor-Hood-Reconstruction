@@ -2,9 +2,6 @@
 
 void ReconstructionVertex::CalcReconstructionVertex(shared_ptr<GridFunction> gfu, shared_ptr<GridFunction> gfsigma)
 {
-  static Timer timer("Reconstruction::CalcReconstructionVertex");
-  RegionTimer reg (timer);
-  cout<<"CalcReconstructionVertex"<<endl;
   gfsigma->GetVector()=0.0;
 
   shared_ptr<MeshAccess> ma  = gfu->GetMeshAccess();
@@ -53,9 +50,9 @@ void ReconstructionVertex::CalcReconstructionVertex(shared_ptr<GridFunction> gfu
 			     FlatVector<> eluv(felu.GetNDof(), lh), shape(nd_vr, lh), elf(nd_vr,lh);
 
 			     gfu->GetElementVector(dnumsu, eluv);	  
-
+			     /*
 			     IntegrationRule ir(eltrans.GetElementType(), felu.Order()*2);
-	  
+			     
 			     elf = 0.0;
 			     for(auto k : IntRange(ir.GetNIP()))
 			       {
@@ -71,14 +68,39 @@ void ReconstructionVertex::CalcReconstructionVertex(shared_ptr<GridFunction> gfu
 				 l2fel.CalcShape(ir[k], shape);
 				 elf += (fac * divu(0))*shape;
 			       }
-	   	  
+			     */
+
+			     SIMD_IntegrationRule ir(eltrans.GetElementType(), felu.Order()*2);
+
+			     elf = 0.0;
+			     SIMD_MappedIntegrationRule<2,2> mir(ir, eltrans,lh);
+
+			     FlatMatrix<SIMD<double>> gradu(2,mir.Size(),lh);
+			     FlatMatrix<SIMD<double>> gradv(2,mir.Size(),lh);
+			     
+			     h1fel.EvaluateGrad(mir, eluv.Range(udofs), gradu);
+			     h1fel.EvaluateGrad(mir, eluv.Range(vdofs), gradv);
+
+			     FlatVector<SIMD<double>> divu(mir.Size(),lh);
+			     divu = gradu.Row(0) +  gradv.Row(1);
+
+			     for (size_t i =0; i< mir.Size(); i++)
+			       divu(i)*=mir[i].GetWeight();
+			     
+			     l2fel.AddTrans(ir, divu, elf);
+			     
+			     
 			     FlatArray<int> dnumss_l2part = dnumss.Range(cfelur.GetRange(1));
-	  
+
+			     for(auto k : dnumss_l2part.Range())
+			       localrhs(globaldofs[i].Pos(dnumss_l2part[k])) = elf(k);
+
+			     /*
 			     for(auto k : IntRange(dnumss_l2part.Size()))
 			       for (auto l : IntRange(globaldofs[i].Size()))
 				 if(dnumss_l2part[k] == globaldofs[i][l])
-				   localrhs[l] = elf[k];
-
+				    localrhs[l] = elf[k];
+			     */
 			   }
 
 			 Vector<> vertexpatchrhs(ldofs+meanvaldofs);
@@ -96,8 +118,6 @@ void ReconstructionVertex::CalcReconstructionVertex(shared_ptr<GridFunction> gfu
 
 void ReconstructionVertex::CalcReconstructionVertexTrans(shared_ptr<LinearForm> fsigma, shared_ptr<LinearForm> fu)
 {
-  static Timer timer("Reconstruction::CalcReconstructionVertexTrans");
-  RegionTimer reg (timer);
   fu->GetVector()=0.0;
   shared_ptr<MeshAccess> ma  = fu->GetMeshAccess();
   shared_ptr<FESpace> fespace_s = fsigma->GetFESpace();
@@ -150,39 +170,38 @@ void ReconstructionVertex::CalcReconstructionVertexTrans(shared_ptr<LinearForm> 
 			     IntRange udofs = cfelu.GetRange(0);
 			     IntRange vdofs = cfelu.GetRange(1);
 
-			     FlatVector<>  shape(nd_vr, lh), elu(felu.GetNDof(),lh), elui(felu.GetNDof(),lh), elfsig(nd_vr, lh);
+			     FlatVector<>  shape(nd_vr, lh), elu(felu.GetNDof(),lh), elfsig(nd_vr, lh);
 	  
 			     elu = 0.0;
 			     elfsig = 0.0;
 	  
-			     IntegrationRule ir(eltrans.GetElementType(), felu.Order()*2);
-	  
 			     FlatArray<int> dnumss_l2part = dnumss.Range(cfelur.GetRange(1));
-	  
+
 			     for(auto k : IntRange(dnumss_l2part.Size()))
 			       for (auto l : IntRange(globaldofs[i].Size()))
 				 if((dnumss_l2part[k] == globaldofs[i][l]))
-				   elfsig[k] = sol[l];
-	  	  
-			     elui = 0; 
-			     for(auto k :IntRange(ir.GetNIP()))
-			       {
-				 MappedIntegrationPoint<2,2> mip(ir[k], eltrans);
-	      
-				 l2fel.CalcShape(ir[k], shape);
+				   elfsig[k] = sol[l];			     	    
 
-				 double fac = InnerProduct(elfsig, shape);
-				 fac *= ir[k].Weight() * mip.GetMeasure();
+			     SIMD_IntegrationRule ir(eltrans.GetElementType(), felu.Order()*2);
+			     SIMD_MappedIntegrationRule<2,2> mir(ir, eltrans,lh);
 
-				 Vec<2> u1 = { fac, 0 }, u2={0,fac};
-	      
-				 FlatVector<double> eluu=  elui.Range(udofs);
-				 FlatVector<double> eluv=  elui.Range(vdofs);
+			     FlatVector<SIMD<double>> fac(mir.Size(), lh);
+			     l2fel.Evaluate(ir,elfsig,fac);
 
-				 DiffOpGradient<2>::ApplyTrans(h1fel, mip, u1, eluu, lh);
-				 DiffOpGradient<2>::ApplyTrans(h1fel, mip, u2, eluv, lh);
-				 elu += elui;
-			       }
+			     for (size_t i =0; i< mir.Size(); i++)
+			       fac(i)*=mir[i].GetWeight();
+
+			     FlatMatrix<SIMD<double>> u1(2,mir.Size(),lh);
+			     FlatMatrix<SIMD<double>> u2(2,mir.Size(),lh);
+
+			     u1 = 0.0;
+			     u2 = 0.0;
+			     u1.Row(0) = fac;
+			     u2.Row(1) = fac;
+			     			     
+			     h1fel.AddGradTrans(mir, u1, elu.Range(udofs));
+			     h1fel.AddGradTrans(mir, u2, elu.Range(vdofs));			     
+			     			     
 			     {
 			       lock_guard<mutex> guard(add_indirect);
 			       fu->GetVector().AddIndirect(dnumsu, elu);
@@ -194,19 +213,7 @@ void ReconstructionVertex::CalcReconstructionVertexTrans(shared_ptr<LinearForm> 
 
 
 void ReconstructionVertex::CalcVertexPatches(shared_ptr<FESpace> fespace_u, shared_ptr<FESpace> fespace_s, shared_ptr<BilinearForm> bfa, shared_ptr<FESpace> h1fespace, bool mini)
-{
-  static Timer timer("Reconstruction::CalcVertexPatches");
-  static Timer timertable("Reconstruction::CreateTables");
-  static Timer timerh1("Reconstruction::H1toL2");
-  static Timer timerlocala("Reconstruction::locala");
-  static Timer timerbubble("Reconstruction::Bubbleproj");
-  static Timer timermeanvals("Reconstruction::meanvals");
-  static Timer timersmooth("Reconstruction::smooth");
-  static Timer timersmoothtest("Reconstruction::smoothtest");
-  static Timer timerinv("Reconstruction::inv");
-  static Timer timermult("Reconstruction::mult");
-  RegionTimer reg (timer);
-  cout<<"CalcVertexPatches"<<endl;
+{  
   shared_ptr<MeshAccess> ma  = fespace_u->GetMeshAccess();
   
   BitArray fineedges(ma->GetNEdges());
@@ -234,40 +241,25 @@ void ReconstructionVertex::CalcVertexPatches(shared_ptr<FESpace> fespace_u, shar
 
   //Check for edges on fine mesh
   for (auto i : IntRange(ma->GetNE()))    
-    {
-      Array<int> enums;
-      enums = ma->GetElEdges(ElementId(VOL,i));
-      for(int e : enums)
-	fineedges.Set(e);      
-    }
+    for(int e : ma->GetElEdges(ElementId(VOL,i)))
+      fineedges.Set(e);      
+    
 
-  timertable.Start();
   TableCreator<int> creator(nv); 
   TableCreator<int> creatoredges(nv); 
   
   for( ; !creator.Done(); creator++)
-    {
-      for (auto i : IntRange(ne))
-	{
-	  Array<int> vnums;
-	  vnums = ma->GetElVertices(i);      
-	  for (int j: vnums)
-	    creator.Add(j,i);
-
-	}      
-    }
+    for (auto i : Range(ne))	  
+      for (int j: ma->GetElVertices(ElementId(VOL,i)))
+	creator.Add(j,i);
   
   BitArray diredge(ma->GetNEdges());
   diredge.Clear();
-  
+
+  auto fespace_u0 = (*dynamic_pointer_cast<CompoundFESpace>(fespace_u))[0];
   for (auto i : IntRange(ma->GetNSE()))
-    {
-      Array<int> enums;
-      
-      enums = ma->GetElEdges(ElementId(BND,i));
-      if ((*dynamic_pointer_cast<CompoundFESpace>(fespace_u))[0]->IsDirichletBoundary(ma->GetElIndex(ElementId(BND,i))))
-	diredge.Set(enums[0]);      
-    }
+    if (fespace_u0->IsDirichletBoundary(ma->GetElIndex(ElementId(BND,i))))
+      diredge.Set( ma->GetElEdges(ElementId(BND,i))[0]);      
 
   for (auto i : IntRange(fineedges.Size()))
     {
@@ -276,28 +268,16 @@ void ReconstructionVertex::CalcVertexPatches(shared_ptr<FESpace> fespace_u, shar
     }
   
   for( ; !creatoredges.Done(); creatoredges++)
-    {
-      for (auto i : IntRange(nedges))
-	{
-	  if(!diredge[i])
-	    {
-	      int v1,v2;
-	      Array<int> vnums;
-	      vnums = ma->GetEdgePNums(i);
-	      
-	      creatoredges.Add(vnums[0],i);
-	      creatoredges.Add(vnums[1],i);
-	    }
-	}      
-    }
+    for (auto i : IntRange(nedges))
+      if(!diredge[i])
+	for (auto v : ma->GetEdgePNums(i))
+	  creatoredges.Add(v, i);	
   
   patch_elements = creator.MoveTable();
   patch_edges = creatoredges.MoveTable();
 
-  timertable.Stop();
   const SparseMatrix<double> & mata = dynamic_cast<SparseMatrix<double> &>(bfa->GetMatrix());
 
-  timerh1.Start();
   TableCreator<int> h1tol2creator(h1fespace->GetNDof());
   LocalHeap lh(1000000, "local_reconstruction");
 
@@ -337,7 +317,6 @@ void ReconstructionVertex::CalcVertexPatches(shared_ptr<FESpace> fespace_u, shar
 	}
     }
   Table<int> h1tol2table = h1tol2creator.MoveTable();
-  timerh1.Stop();
   
   globaldofs.SetSize(nv);
   patchmatinv.SetSize(nv);
@@ -345,10 +324,9 @@ void ReconstructionVertex::CalcVertexPatches(shared_ptr<FESpace> fespace_u, shar
   
   ParallelForRange(nv, [&](IntRange r)		   
 		   {
+		     LocalHeap slh=lh.Split();
 		     for (auto i : r)
 		       {
-			 LocalHeap slh=lh.Split();
-			 
 			 HeapReset hr(slh);
       
 			 Array<int> & globallocaldofs = globaldofs[i];
@@ -377,7 +355,6 @@ void ReconstructionVertex::CalcVertexPatches(shared_ptr<FESpace> fespace_u, shar
 			 bubbleprojmat = Identity(ldofs);
 			 localmata=0.0;
 
-			 timerlocala.Start();
 			 for (int j : IntRange(ldofs))
 			   {	 
 			     auto d = mata.GetRowIndices(globallocaldofs[j]);
@@ -398,9 +375,7 @@ void ReconstructionVertex::CalcVertexPatches(shared_ptr<FESpace> fespace_u, shar
 				 else
 				   l++;	    
 			       }
-			   }
-      
-			 timerlocala.Stop();
+			   }    
 
 			 //Calculate bubble Projection and meanvals
 			 Vec<2> Vertex0(0,0);
@@ -416,7 +391,7 @@ void ReconstructionVertex::CalcVertexPatches(shared_ptr<FESpace> fespace_u, shar
 			       }	  
 			   }
             
-			 for (auto j : IntRange(patch_elements[i].Size()))
+			 for (auto j : patch_elements[i].Range())
 			   {	      
 			     int id = patch_elements[i][j];
 			     ElementId ei(VOL,id);
@@ -440,7 +415,7 @@ void ReconstructionVertex::CalcVertexPatches(shared_ptr<FESpace> fespace_u, shar
 
 			     FlatVector<> shapemeanval(meanvaldofs, slh);
 			     shapemeanval = 0.0;
-			     timermeanvals.Start();
+
 			     if(meanvalorder !=0)
 			       {
 				 for (auto l : IntRange(ir.GetNIP()))
@@ -460,8 +435,8 @@ void ReconstructionVertex::CalcVertexPatches(shared_ptr<FESpace> fespace_u, shar
 				 fespace_s->GetDofNrs(ei, dnumss);	  	      
 				 FlatArray<int> dnums_sigma = dnumss.Range(cfelur.GetRange(0));
 	  
-				 for(auto k : IntRange(dnums_sigma.Size()))
-				   for(auto l : IntRange(globaldofs[i].Size()))		
+				 for(auto k : dnums_sigma.Range())
+				   for(auto l : globaldofs[i].Range())		
 				     if(dnums_sigma[k] == globaldofs[i][l])
 				       {
 					 if(meanvalorder !=0)
@@ -471,9 +446,7 @@ void ReconstructionVertex::CalcVertexPatches(shared_ptr<FESpace> fespace_u, shar
 					   }
 				       }
 			       }
-			     timermeanvals.Stop();
 
-			     timerbubble.Start();
 			     //Bubble Projection
 			     Array<int> vnums;
 			     vnums = ma->GetElVertices(ei);
@@ -511,19 +484,18 @@ void ReconstructionVertex::CalcVertexPatches(shared_ptr<FESpace> fespace_u, shar
 			     fespace_s->GetDofNrs(ei, dnumss);	  	      
 			     FlatArray<int> dnums_l2part = dnumss.Range(cfelur.GetRange(1));
 	  
-			     for(auto k : IntRange(dnums_l2part.Size()))
-			       for(auto l : IntRange(globaldofs[i].Size()))		
+			     for(auto k : dnums_l2part.Range())
+			       for(auto l : globaldofs[i].Range())		
 				 if(dnums_l2part[k] == globaldofs[i][l])
 				   {
-				     for(auto  z : IntRange(dnums_l2part.Size()))
-				       for(auto r : IntRange(globaldofs[i].Size()))
+				     for(auto  z : dnums_l2part.Range())
+				       for(auto r : globaldofs[i].Range())
 					 if(dnums_l2part[z] == globaldofs[i][r])
 					   {
 					     bubbleprojmat(r,l) = localbubbleproj(k,z);
 					     bubbleprojmat(l,r) = localbubbleproj(z,k);
 					   }
 				   }
-			     timerbubble.Stop();
 			   }
 	
 
@@ -534,13 +506,13 @@ void ReconstructionVertex::CalcVertexPatches(shared_ptr<FESpace> fespace_u, shar
      
 			 //add all H1-dofs to elementdofsh1 that they do not appear twice 
 			 Array<int> elementdofsh1;      
-			 for (auto l : IntRange(patch_elements[i].Size()))
+			 for (auto l : patch_elements[i].Range())
 			   {	      
 			     int id = patch_elements[i][l];
 			     Array<int> elementdofselement;
 			     h1fespace->GetDofNrs(ElementId(VOL,id), elementdofselement);
 	  
-			     for(auto j : IntRange(elementdofselement.Size()))
+			     for(auto j : elementdofselement.Range())
 			       if(!(elementdofsh1.Contains(elementdofselement[j])))
 				 elementdofsh1.Append(elementdofselement[j]);
 			   }
@@ -548,40 +520,33 @@ void ReconstructionVertex::CalcVertexPatches(shared_ptr<FESpace> fespace_u, shar
 			 //loop over all coupling dofs
 			 //note that also the dofs on the boundary of the vertex are included
 			 //but those dofs will be set to zero in the evaluation of the operator later
-			 for(auto j : IntRange(elementdofsh1.Size()))
+			 for(auto j : elementdofsh1.Range())
 			   {
 			     //if dofnr is no inner dofs
 			     Array<int> smoothdofs;
 			     smooth=0.0;
 			     //dofs that couple
-			     for (auto k : IntRange(h1tol2table[elementdofsh1[j]].Size()))
+			     for (auto k : h1tol2table[elementdofsh1[j]].Range())
 			       {
 				 //check in globallocaldofs
-				 for(auto s : IntRange(globallocaldofs.Size()))
+				 for(auto s : globallocaldofs.Range())
 				   if(globallocaldofs[s] == h1tol2table[elementdofsh1[j]][k])
 				     {
 				       smooth(s)=1;
 				       smoothdofs.Append(s);
 				     }
 			       }
-			     timersmooth.Start();
-
-			     for (auto k : IntRange(smoothdofs.Size()))
-				 for (auto s : IntRange(smoothdofs.Size()))
+			     for (auto k : smoothdofs.Range())
+				 for (auto s : smoothdofs.Range())
 				     extrosclocal(smoothdofs[k],smoothdofs[s]) -= 1.0/h1tol2table[elementdofsh1[j]].Size();
-			     timersmooth.Stop();
 			   }
       
-			 timerinv.Start();
 			 CalcInverse(localmata);
-			 timerinv.Stop();
 			 
 			 patchmatinv[i] = std::move(localmata);
 
 			 extrosc[i].SetSize(ldofs);
-			 timermult.Start();
 			 extrosc[i] = (bubbleprojmat*extrosclocal | Lapack) ;
-			 timermult.Stop();
 		       }		   
 		   });
 }
