@@ -1,27 +1,40 @@
 #include "reconstruction.hpp"
 
 void ReconstructionVertex::CalcReconstructionVertex(shared_ptr<GridFunction> gfu, shared_ptr<GridFunction> gfsigma)
-{
+{  
   gfsigma->GetVector()=0.0;
 
+  //The meshacces, needed for some topolgy informations
   shared_ptr<MeshAccess> ma  = gfu->GetMeshAccess();
+
+  //the compound FESpace of sigma gridfunction
   shared_ptr<FESpace> fespace_s = gfsigma->GetFESpace();
+  //the compound FESpace of the Taylor-Hood gridfunction
   shared_ptr<FESpace> fespace_u = gfu->GetFESpace();
 
+  //Mutex variable needed for "critical" code lines in parallel loops
   static mutex add_indirect;
-  
+
+  //Here starts the reconstruction
+  //We start a parallel for loop in the range from 0 .. nv = number of vertices
   ParallelForRange(nv, [&](IntRange r)
 		   {
 		     LocalHeap lh(100000, "local_reconstruction");
+		     //Here starts the actual loop
 		     for (auto i : r) 
 		       {
+			 //Reset the heap, all local variables are stored on the fast accessible heap
 			 HeapReset hr(lh);
-      
-			 int ldofs = globaldofs[i].Size();			 
+
+			 //globaldofs[i] is an array which contains the local degrees of freedoms on one vertex patch
+			 int ldofs = globaldofs[i].Size();
+
+			 //The local right hand side for the problem defined on the vertex patch
 			 FlatVector<> localrhs(ldofs+meanvaldofs, lh);
 			 localrhs=0.0;
-      
-			 for (auto j : IntRange(patch_elements[i].Size()))
+
+			 //A loop over the element of the vertex patch i
+			 for (auto j : patch_elements[i].Range())
 			   {
 			     HeapReset hr(lh);
 			     int el = patch_elements[i][j];
@@ -31,83 +44,79 @@ void ReconstructionVertex::CalcReconstructionVertex(shared_ptr<GridFunction> gfu
 	  
 			     const FiniteElement & felu = fespace_u -> GetFE(ei,lh);
 			     const CompoundFiniteElement & cfelu = dynamic_cast<const CompoundFiniteElement&>(felu);
+			     //The H1-finite element of the Taylor-Hood space
 			     const ScalarFiniteElement<2> & h1fel = dynamic_cast<const ScalarFiniteElement<2> &> (cfelu[0]);
 
 			     const FiniteElement & felur = fespace_s -> GetFE(ei,lh);
-			     const CompoundFiniteElement & cfelur = dynamic_cast<const CompoundFiniteElement&>(felur);
+			     const CompoundFiniteElement & cfelur = dynamic_cast<const CompoundFiniteElement&>(felur);			     
+			     //The L2-finite element space of the reconstruction spaces
 			     const ScalarFiniteElement<2> & l2fel = dynamic_cast<const ScalarFiniteElement<2> &> (cfelur[1]);	
 
 			     int nd_vr = l2fel.GetNDof();
 
 			     Array<int> dnumsu(felu.GetNDof(), lh), dnumss(felur.GetNDof(), lh);
 
+			     //Get the dof numbers corresponding to the element j
 			     fespace_u->GetDofNrs(ei, dnumsu);
 			     fespace_s->GetDofNrs(ei, dnumss);
 
+			     //On the compound FESpace the dofs are stored one after another
 			     IntRange udofs = cfelu.GetRange(0);
 			     IntRange vdofs = cfelu.GetRange(1);
 
 			     FlatVector<> eluv(felu.GetNDof(), lh), shape(nd_vr, lh), elf(nd_vr,lh);
 
+			     // Get the coefficients of the Taylo-Hood solution gfu on the element j
 			     gfu->GetElementVector(dnumsu, eluv);	  
-			     /*
-			     IntegrationRule ir(eltrans.GetElementType(), felu.Order()*2);
-			     
-			     elf = 0.0;
-			     for(auto k : IntRange(ir.GetNIP()))
-			       {
-				 MappedIntegrationPoint<2,2> mip(ir[k], eltrans);
 
-				 Vec<2> gradu;
-				 Vec<2> gradv;
-				 DiffOpGradient<2>::Apply(h1fel, mip, eluv.Range(udofs), gradu, lh);
-				 DiffOpGradient<2>::Apply(h1fel, mip, eluv.Range(vdofs), gradv, lh);
-				 Vec<1> divu = gradu[0]+gradv[1];			     
+			     //In the following lines we calculate the divergence of the Taylor-Hood solution
 
-				 double fac = ir[k].Weight() * mip.GetMeasure();
-				 l2fel.CalcShape(ir[k], shape);
-				 elf += (fac * divu(0))*shape;
-			       }
-			     */
-
+			     //We define a integration rule on the reference element
 			     SIMD_IntegrationRule ir(eltrans.GetElementType(), felu.Order()*2);
 
 			     elf = 0.0;
+			     //We map the reference integration rule onto the phsical element j
 			     SIMD_MappedIntegrationRule<2,2> mir(ir, eltrans,lh);
 
+			     //Some help vectors to store the local solution
 			     FlatMatrix<SIMD<double>> gradu(2,mir.Size(),lh);
 			     FlatMatrix<SIMD<double>> gradv(2,mir.Size(),lh);
-			     
+
+			     //Evaluate the gradient of the Taylor-Hood solution (at all integration points simultaneously!)
 			     h1fel.EvaluateGrad(mir, eluv.Range(udofs), gradu);
 			     h1fel.EvaluateGrad(mir, eluv.Range(vdofs), gradv);
 
 			     FlatVector<SIMD<double>> divu(mir.Size(),lh);
+			     //And calculate the divergence
 			     divu = gradu.Row(0) +  gradv.Row(1);
 
+			     //Add the integration poins (in order to calculate the integral)
 			     for (size_t i =0; i< mir.Size(); i++)
 			       divu(i)*=mir[i].GetWeight();
-			     
+
+			     //"test" with the testfunction
 			     l2fel.AddTrans(ir, divu, elf);
-			     
 			     
 			     FlatArray<int> dnumss_l2part = dnumss.Range(cfelur.GetRange(1));
 
+			     //localrhs is the rhs for the whole vertex patch.
+			     //We add the corresponding entries of the element j on the right position of the localrhs
+			     //globaldofs[i].Pos(dnumss_l2part[k]) gives the position in globaldofs[i] of dnumss_l2part[k]			     
 			     for(auto k : dnumss_l2part.Range())
 			       localrhs(globaldofs[i].Pos(dnumss_l2part[k])) = elf(k);
-
-			     /*
-			     for(auto k : IntRange(dnumss_l2part.Size()))
-			       for (auto l : IntRange(globaldofs[i].Size()))
-				 if(dnumss_l2part[k] == globaldofs[i][l])
-				    localrhs[l] = elf[k];
-			     */
 			   }
 
 			 Vector<> vertexpatchrhs(ldofs+meanvaldofs);
 			 vertexpatchrhs = 0.0;
+
+			 //Here we apply the Oswald operator and the bubble projector (which have been calculated in the setup)
 			 vertexpatchrhs.Range(0,ldofs) = extrosc[i] * localrhs.Range(0,ldofs);
 
+			 //We solve the local problem 
 			 localrhs = patchmatinv[i] * vertexpatchrhs;
+
+			 //And write the solution in the global solution vector.
+			 //This is a critical section - parallel threads are not allowed to write simultaneously			
 			 {
 			   lock_guard<mutex> guard(add_indirect);
 			   gfsigma->GetVector().AddIndirect(globaldofs[i], localrhs.Range(0,ldofs));
