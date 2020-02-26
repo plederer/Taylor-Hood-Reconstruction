@@ -86,7 +86,7 @@ void ExportRec(py::module &m)
 }
 
 
-PYBIND11_MODULE(reclib,m) 
+PYBIND11_MODULE(reclib_TH,m) 
 {
   ExportRec(m);
 
